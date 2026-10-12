@@ -5,3 +5,4 @@ data/*.csv
 data/*.xlsx
 data/modele/
 data/statistiques/
+data/.~lock.*
