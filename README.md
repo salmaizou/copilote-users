@@ -11,6 +11,12 @@ Ce projet analyse des traces de sessions Copilote. Il permet de préparer un cla
 - `modele.py` : évalue un classifieur Bayes naïf sur une séparation stratifiée du jeu d'entraînement, puis entraîne le modèle sur toutes les données d'entraînement et prédit les utilisateurs des sessions de test.
 - `requirements.txt` : dépendance Python nécessaire à la création des fichiers Excel (`openpyxl`).
 
+## Prérequis
+
+- Windows et PowerShell
+- Python 3.9 ou plus récent
+- Les fichiers de données CSV décrits ci-dessous
+
 ## Installation
 
 Ouvrez PowerShell dans le dossier du projet et créez un environnement virtuel :
