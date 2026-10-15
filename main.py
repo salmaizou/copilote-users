@@ -2,6 +2,7 @@ import csv
 import warnings
 from pathlib import Path
 
+
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font
@@ -22,6 +23,7 @@ SOURCES = (
     ("test.csv", "Test", "TableTest", False),
     ("sample_submission.csv", "Soumission", "TableSoumission", True),
 )
+
 
 
 def inspect_csv(path: Path) -> tuple[int, int]:
@@ -108,6 +110,7 @@ def main() -> None:
             sheet,
             has_header,
         )
+        
         print(
             f"{filename} : {row_count} lignes, {column_count} colonnes "
             f"ajoutées à la feuille « {sheet_name} »."
@@ -115,6 +118,7 @@ def main() -> None:
 
     workbook.save(OUTPUT_FILE)
     print(f"Classeur Excel créé : {OUTPUT_FILE}")
+
 
 
 if __name__ == "__main__":
