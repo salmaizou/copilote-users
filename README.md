@@ -4,7 +4,7 @@ Ce projet analyse des traces de sessions Copilote. Il permet de préparer un cla
 
 > Les fichiers de données et les résultats générés ne sont pas inclus dans le dépôt. Il faut ajouter les fichiers CSV localement avant de lancer les scripts.
 
-## Contenu du projet
+## Contenu du Projet
 
 - `main.py` : rassemble les CSV dans un classeur Excel pour faciliter leur consultation.
 - `statistiques.py` : calcule des statistiques sur les navigateurs, les utilisateurs, les actions et les durées estimées. Génère des tableaux CSV et un classeur Excel.
