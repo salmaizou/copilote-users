@@ -19,6 +19,7 @@ RANDOM_STATE = 42
 ALPHA = 0.01
 VALIDATION_SIZE = 0.25
 CROSS_VALIDATION_MAX_FOLDS = 5
+MIN_FEATURE_DOCUMENT_FREQUENCY = 3
 MODEL_FEATURE_PREFIXES = (
     "navigateur=",
     "detail=",
@@ -209,7 +210,8 @@ def fit_naive_bayes(
     vocabulary = {
         feature
         for feature, frequency in document_frequency.items()
-        if frequency >= 2 and frequency <= len(documents) * 0.9
+        if frequency >= MIN_FEATURE_DOCUMENT_FREQUENCY
+        and frequency <= len(documents) * 0.9
     }
     class_documents: Counter[str] = Counter()
     class_features: dict[str, Counter[str]] = {}
