@@ -18,6 +18,7 @@ TIME_MARKER = re.compile(r"t(\d+)", re.IGNORECASE)
 RANDOM_STATE = 42
 ALPHA = 0.01
 VALIDATION_SIZE = 0.25
+CROSS_VALIDATION_MAX_FOLDS = 5
 MODEL_FEATURE_PREFIXES = (
     "navigateur=",
     "detail=",
@@ -37,6 +38,27 @@ class NaiveBayesModel(TypedDict):
     feature_deltas: dict[str, list[tuple[str, float]]]
     log_denominators: dict[str, float]
     vocabulary: set[str]
+
+
+class CrossValidationFold(TypedDict):
+    pli: int
+    sessions_entrainement: int
+    sessions_validation: int
+    accuracy_entrainement: float
+    accuracy_validation: float
+    f1_macro_validation: float
+
+
+class CrossValidationReport(TypedDict):
+    methode: str
+    nombre_plis: int
+    random_state: int
+    sessions: int
+    accuracy_entrainement_moyenne: float
+    accuracy_validation_moyenne: float
+    ecart_accuracy_entrainement_validation: float
+    resultats_validation_global: dict[str, float]
+    resultats_par_pli: list[CrossValidationFold]
 
 
 def normalize_action(value: str) -> str:
@@ -147,6 +169,31 @@ def stratified_split(labels: list[str]) -> tuple[list[int], list[int]]:
     return train_indices, validation_indices
 
 
+def stratified_k_fold(labels: list[str], n_splits: int) -> list[list[int]]:
+    groups: dict[str, list[int]] = {}
+    for index, label in enumerate(labels):
+        groups.setdefault(label, []).append(index)
+
+    if not groups or min(map(len, groups.values())) < n_splits:
+        raise ValueError(
+            "La validation croisée exige au moins autant de sessions par "
+            "utilisateur que de plis."
+        )
+
+    generator = random.Random(RANDOM_STATE)
+    folds: list[list[int]] = [[] for _ in range(n_splits)]
+    fold_offset = 0
+    for indices in groups.values():
+        generator.shuffle(indices)
+        for position, index in enumerate(indices):
+            folds[(fold_offset + position) % n_splits].append(index)
+        fold_offset = (fold_offset + len(indices)) % n_splits
+
+    for fold in folds:
+        generator.shuffle(fold)
+    return folds
+
+
 def fit_naive_bayes(
     documents: list[dict[str, float]],
     labels: list[str],
@@ -233,8 +280,18 @@ def predict_naive_bayes(
 
 
 def classification_scores(expected: list[str], predicted: list[str]) -> dict[str, float]:
+    if not expected:
+        return {
+            "accuracy": 0.0,
+            "precision_macro": 0.0,
+            "recall_macro": 0.0,
+            "f1_macro": 0.0,
+        }
+
     correct = sum(actual == guess for actual, guess in zip(expected, predicted))
-    labels = set(expected)
+    labels = sorted(set(expected) | set(predicted))
+    per_class_precision = []
+    per_class_recall = []
     per_class_f1 = []
     for label in labels:
         true_positive = sum(
@@ -249,13 +306,106 @@ def classification_scores(expected: list[str], predicted: list[str]) -> dict[str
             actual == label and guess != label
             for actual, guess in zip(expected, predicted)
         )
-        denominator = 2 * true_positive + false_positive + false_negative
+        precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+        recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+        f1_denominator = precision + recall
+        per_class_precision.append(precision)
+        per_class_recall.append(recall)
         per_class_f1.append(
-            2 * true_positive / denominator if denominator else 0.0
+            (2 * precision * recall / f1_denominator) if f1_denominator else 0.0
         )
+
+    accuracy = correct / len(expected)
+    precision_macro = sum(per_class_precision) / len(per_class_precision)
+    recall_macro = sum(per_class_recall) / len(per_class_recall)
+    f1_macro = sum(per_class_f1) / len(per_class_f1)
+
     return {
-        "accuracy": round(correct / len(expected), 4),
-        "f1_macro": round(sum(per_class_f1) / len(per_class_f1), 4),
+        "accuracy": round(accuracy, 4),
+        "precision_macro": round(precision_macro, 4),
+        "recall_macro": round(recall_macro, 4),
+        "f1_macro": round(f1_macro, 4),
+    }
+
+
+def cross_validate(
+    documents: list[dict[str, float]],
+    labels: list[str],
+    n_splits: int,
+) -> CrossValidationReport:
+    folds = stratified_k_fold(labels, n_splits)
+    out_of_fold_predictions = [""] * len(labels)
+    fold_results: list[CrossValidationFold] = []
+    training_accuracies = []
+    validation_accuracies = []
+
+    for fold_number, validation_indices in enumerate(folds, start=1):
+        validation_set = set(validation_indices)
+        training_indices = [
+            index for index in range(len(labels)) if index not in validation_set
+        ]
+        training_documents = [documents[index] for index in training_indices]
+        training_labels = [labels[index] for index in training_indices]
+        validation_documents = [documents[index] for index in validation_indices]
+        validation_labels = [labels[index] for index in validation_indices]
+
+        model = fit_naive_bayes(training_documents, training_labels)
+        training_predictions = predict_naive_bayes(model, training_documents)
+        validation_predictions = predict_naive_bayes(model, validation_documents)
+        for index, prediction in zip(validation_indices, validation_predictions):
+            out_of_fold_predictions[index] = prediction
+
+        training_scores = classification_scores(
+            training_labels,
+            training_predictions,
+        )
+        validation_scores = classification_scores(
+            validation_labels,
+            validation_predictions,
+        )
+        training_accuracies.append(training_scores["accuracy"])
+        validation_accuracies.append(validation_scores["accuracy"])
+        fold_results.append(
+            {
+                "pli": fold_number,
+                "sessions_entrainement": len(training_indices),
+                "sessions_validation": len(validation_indices),
+                "accuracy_entrainement": training_scores["accuracy"],
+                "accuracy_validation": validation_scores["accuracy"],
+                "f1_macro_validation": validation_scores["f1_macro"],
+            }
+        )
+
+    if any(not prediction for prediction in out_of_fold_predictions):
+        raise RuntimeError(
+            "La validation croisée n'a pas produit de prédiction pour chaque session."
+        )
+
+    pooled_validation_scores = classification_scores(
+        labels,
+        out_of_fold_predictions,
+    )
+    mean_training_accuracy = round(
+        sum(training_accuracies) / len(training_accuracies),
+        4,
+    )
+    mean_validation_accuracy = round(
+        sum(validation_accuracies) / len(validation_accuracies),
+        4,
+    )
+    return {
+        "methode": "validation croisée stratifiée",
+        "nombre_plis": n_splits,
+        "random_state": RANDOM_STATE,
+        "sessions": len(labels),
+        "accuracy_entrainement_moyenne": mean_training_accuracy,
+        "accuracy_validation_moyenne": mean_validation_accuracy,
+        "ecart_accuracy_entrainement_validation": round(
+            mean_training_accuracy - mean_validation_accuracy,
+            4,
+        ),
+        "resultats_validation_global": pooled_validation_scores,
+        "resultats_par_pli": fold_results,
     }
 
 
@@ -265,6 +415,15 @@ def main() -> None:
     test_features, _ = load_dataset("test.csv", training=False)
 
     label_counts = Counter(labels)
+    n_splits = min(
+        CROSS_VALIDATION_MAX_FOLDS,
+        min(label_counts.values()),
+    )
+    cross_validation_results = cross_validate(
+        train_features,
+        labels,
+        n_splits,
+    )
     train_indices, validation_indices = stratified_split(labels)
     validation_set = set(validation_indices)
     split_path = OUTPUT_DIR / "validation_split.csv"
@@ -295,6 +454,7 @@ def main() -> None:
     )
 
     metrics = {
+        "validation_croisee": cross_validation_results,
         "validation": {
             "methode": "separation unique stratifiee",
             "random_state": RANDOM_STATE,
@@ -310,6 +470,27 @@ def main() -> None:
             "modele": "Bayes naïf présence binaire",
         }
     }
+    print(
+        f"Validation croisée stratifiée ({n_splits} plis) : "
+        f"accuracy moyenne entraînement="
+        f"{cross_validation_results['accuracy_entrainement_moyenne']:.4f}, "
+        f"accuracy moyenne validation="
+        f"{cross_validation_results['accuracy_validation_moyenne']:.4f}, "
+        f"écart="
+        f"{cross_validation_results['ecart_accuracy_entrainement_validation']:.4f}"
+    )
+    print(
+        "Accuracy validation croisée globale : "
+        f"{cross_validation_results['resultats_validation_global']['accuracy']:.4f}"
+    )
+    for fold_result in cross_validation_results["resultats_par_pli"]:
+        print(
+            f"- Pli {fold_result['pli']} : "
+            f"accuracy entraînement={fold_result['accuracy_entrainement']:.4f}, "
+            f"validation={fold_result['accuracy_validation']:.4f}, "
+            f"F1 macro validation={fold_result['f1_macro_validation']:.4f}"
+        )
+
     print("Validation stratifiée sur une seule séparation :")
     print(f"Utilisateurs : {len(label_counts)}")
     print(
@@ -319,11 +500,15 @@ def main() -> None:
     print(
         "- Bayes naïf présence binaire : "
         f"accuracy={model_results['accuracy']:.4f}, "
+        f"precision macro={model_results['precision_macro']:.4f}, "
+        f"recall macro={model_results['recall_macro']:.4f}, "
         f"F1 macro={model_results['f1_macro']:.4f}"
     )
     print(
         "- Baseline majoritaire : "
         f"accuracy={baseline_results['accuracy']:.4f}, "
+        f"precision macro={baseline_results['precision_macro']:.4f}, "
+        f"recall macro={baseline_results['recall_macro']:.4f}, "
         f"F1 macro={baseline_results['f1_macro']:.4f}"
     )
     print("Modèle : Bayes naïf présence binaire")
